@@ -238,7 +238,7 @@ Summary
 
 ### How it was developed
 
-Written after the NTT contracts were redeployed (old: `0x5865.../0xb425...` → new: `0x65a7.../0xe628...`). The `relay-once.sh` file still contains the old addresses, confirming this migration happened after the shell script was first written. The `.backup.20260301` files are snapshots taken the day before the migration ran.
+Written after the NTT contracts were redeployed with updated addresses. The `.backup.20260301` files on the production server are snapshots taken the day before the migration ran.
 
 ---
 

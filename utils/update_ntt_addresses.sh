@@ -65,8 +65,8 @@ for f in "${ENV_FILES[@]}"; do
     if [ -f "$f" ]; then
         sed -i "s|$OLD_NTT|$NEW_NTT|gI" "$f"
         sed -i "s|$OLD_WT|$NEW_WT|gI" "$f"
-        sed -i "s|b4254f5515c87dbb14d816324462b71244b3356c|${NEW_NTT:2}|gI" "$f"
-        sed -i "s|5865af9692d8e763da3ca42677770698e54d2e26|${NEW_WT:2}|gI" "$f"
+        sed -i "s|${OLD_NTT:2}|${NEW_NTT:2}|gI" "$f"
+        sed -i "s|${OLD_WT:2}|${NEW_WT:2}|gI" "$f"
         echo "  Updated: $f"
     fi
 done
