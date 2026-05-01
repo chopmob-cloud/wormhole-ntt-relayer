@@ -1,0 +1,19 @@
+[Unit]
+Description=Base -> Algorand NTT Relay Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/relayers/base_to_algo
+Environment=ENV_FILE=/opt/relayers/base_to_algo/.env
+Environment=POLL_INTERVAL=30
+ExecStart=/opt/relayers/base_to_algo/venv/bin/python /opt/relayers/base_to_algo/relay_service.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

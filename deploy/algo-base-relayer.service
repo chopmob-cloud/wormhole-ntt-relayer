@@ -1,0 +1,16 @@
+[Unit]
+Description=Wormhole NTT Relayer (Algorand -> Base) via cast
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/relayers/algo_to_base
+ExecStart=/opt/relayers/algo_to_base/venv/bin/python3 /opt/relayers/algo_to_base/cast_relayer.py
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
