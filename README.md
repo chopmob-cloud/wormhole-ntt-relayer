@@ -401,7 +401,59 @@ Guardian signature verification on Algorand uses a template LogicSig program. Th
 | `TMPL_APP_ID` | uvarint | Wormhole Core app ID |
 | `TMPL_APP_ADDRESS` | length-prefixed bytes | Wormhole Core app address |
 
-`vaa_verify.teal` is not included in this repo — `setup.sh` downloads it from the Wormhole GitHub repository. It must be present at `/tmp/wormhole/algorand/teal/vaa_verify.teal` before the service starts. The compiled output is cached at `/tmp/vaa_verify_program.b64`.
+`vaa_verify.teal` is not included in this repo — `setup.sh` downloads it from the Wormhole GitHub repository. The relayer looks for it in the following order:
+
+1. Same directory as `base-relayer.py` (e.g. `/opt/relayers/base_to_algo/vaa_verify.teal`) — **persistent across reboots**
+2. `/tmp/wormhole/algorand/teal/vaa_verify.teal` — fallback, lost on reboot
+
+Copy it to the relayer directory to ensure it survives server restarts:
+```bash
+cp /path/to/wormhole/algorand/teal/vaa_verify.teal /opt/relayers/base_to_algo/vaa_verify.teal
+```
+
+The compiled output is cached at `/tmp/vaa_verify_program.b64` and rebuilt automatically if missing.
+
+---
+
+## Security
+
+### Secrets
+
+All credentials are loaded exclusively from environment variables or a `.env` file — never hardcoded. The required secrets are:
+
+| Secret | Service | Purpose |
+|---|---|---|
+| `PRIVATEKEY` | Algo → Base | Base wallet private key (64 hex chars, no `0x` prefix) |
+| `ALGO_MNEMONIC` | Base → Algo | 25-word Algorand mnemonic for the relayer wallet |
+
+The `.env` file should be readable only by the service user:
+```bash
+chmod 600 /opt/relayers/algo_to_base/.env
+chmod 600 /opt/relayers/base_to_algo/.env
+```
+
+### Private key handling (Algorand → Base)
+
+`cast_relayer.py` passes the Base private key via the subprocess **environment** (`env["ETH_PRIVATE_KEY"] = "0x" + PRIVATEKEY`) rather than as a `--private-key` CLI argument. This prevents the key from appearing in `ps aux` output or shell history.
+
+`utils/relay-once.sh` is a manual one-shot debug script and does pass the key as a CLI argument — it should only be used in trusted environments and not run as part of the production service.
+
+### SQL injection protection
+
+`relay_service.py` validates all column names passed to `db_upsert()` against a static allowlist (`_ALLOWED_COLS`) before constructing any SQL. Unknown column names raise `ValueError` immediately.
+
+### VAA payload bounds checking
+
+`base-relayer.py` and `ntt_execute.py` validate payload length at each field boundary before slicing. Truncated or malformed VAAs are rejected before any on-chain transaction is submitted.
+
+### Replay protection
+
+- **Algorand → Base**: SQLite keyed on `sequence` — already-relayed sequences are skipped on poll.
+- **Base → Algorand**: SQLite state machine (`pending → attested → complete`). The Algorand `WormholeTransceiver` also maintains a `vaas_consumed_` box on-chain; a VAA whose digest is already in that box will be rejected at the contract level even if the DB is cleared.
+
+### TEAL files
+
+No `.teal` files are committed to this repository. `vaa_verify.teal` is obtained separately (via `setup.sh` or manual copy) and never checked in, as it is part of the public Wormhole SDK and contains no secrets.
 
 ---
 
