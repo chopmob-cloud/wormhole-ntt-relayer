@@ -88,14 +88,13 @@ def cast_redeem(vaa_hex: str) -> str:
         "--gas-limit",
         "600000",
         "--json",
+        "--private-key",
+        "0x" + PRIVATEKEY,
     ]
 
     print("Running cast send...", flush=True)
 
-    # Pass key via environment variable — keeps it out of process list (ps aux)
-    env = os.environ.copy()
-    env["ETH_PRIVATE_KEY"] = "0x" + PRIVATEKEY
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         print("cast stdout:", result.stdout, flush=True)

@@ -434,9 +434,9 @@ chmod 600 /opt/relayers/base_to_algo/.env
 
 ### Private key handling (Algorand → Base)
 
-`cast_relayer.py` passes the Base private key via the subprocess **environment** (`env["ETH_PRIVATE_KEY"] = "0x" + PRIVATEKEY`) rather than as a `--private-key` CLI argument. This prevents the key from appearing in `ps aux` output or shell history.
+`cast_relayer.py` loads the Base private key from the `.env` file at startup via `python-dotenv` and passes it to `cast send` via `--private-key`. The key is never hardcoded in source — it lives only in the `.env` file on the server, which should be `chmod 600`.
 
-`utils/relay-once.sh` is a manual one-shot debug script and does pass the key as a CLI argument — it should only be used in trusted environments and not run as part of the production service.
+`utils/relay-once.sh` is a manual one-shot debug script that also uses `--private-key` — it should only be used in trusted environments and not run as part of the production service.
 
 ### SQL injection protection
 
