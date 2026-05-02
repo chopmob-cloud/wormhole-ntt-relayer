@@ -125,6 +125,8 @@ def parse_ntt_fields(parsed):
 
     # Decode inner for recipient info
     inner_len  = int.from_bytes(mp[64:66], "big")
+    if 66 + inner_len > len(mp):
+        return None
     inner_body = mp[66:66+inner_len]
 
     from_amount     = int.from_bytes(inner_body[5:13],  "big") if len(inner_body) >= 13 else None

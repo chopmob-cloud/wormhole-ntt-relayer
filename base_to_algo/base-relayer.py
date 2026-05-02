@@ -116,8 +116,12 @@ def get_tmplsig(addr_idx, emitter_id):
     return lsa.address(), lsa
 
 def parse_vaa(vaa_bytes):
+    if len(vaa_bytes) < 6:
+        raise ValueError(f"VAA too short: {len(vaa_bytes)} bytes")
     num_sigs   = vaa_bytes[5]
     body_start = 6 + num_sigs * SIG_LEN
+    if len(vaa_bytes) < body_start + 51:
+        raise ValueError(f"VAA truncated: {len(vaa_bytes)} bytes, need {body_start + 51}")
     body       = vaa_bytes[body_start:]
     return {
         "guardian_set_index": int.from_bytes(vaa_bytes[1:5], "big"),

@@ -65,7 +65,16 @@ def db_get(seq: int) -> dict | None:
         row = db.execute("SELECT * FROM sequences WHERE sequence=?", (seq,)).fetchone()
         return dict(row) if row else None
 
+_ALLOWED_COLS = frozenset({
+    "status", "vaa_digest", "ntt_digest", "recipient", "amount",
+    "attest_txid", "execute_txid", "attempts", "last_error",
+    "updated_at", "created_at",
+})
+
 def db_upsert(seq: int, **kwargs):
+    unknown = set(kwargs) - _ALLOWED_COLS
+    if unknown:
+        raise ValueError(f"db_upsert: unknown column(s): {unknown}")
     kwargs["updated_at"] = "datetime('now')"
     with get_db() as db:
         existing = db.execute("SELECT sequence FROM sequences WHERE sequence=?", (seq,)).fetchone()

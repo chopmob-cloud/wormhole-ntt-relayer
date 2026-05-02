@@ -83,8 +83,6 @@ def cast_redeem(vaa_hex: str) -> str:
         TRANSCEIVER,
         "receiveMessage(bytes)",
         vaa_hex,
-        "--private-key",
-        "0x" + PRIVATEKEY,
         "--rpc-url",
         RPCURL,
         "--gas-limit",
@@ -94,7 +92,10 @@ def cast_redeem(vaa_hex: str) -> str:
 
     print("Running cast send...", flush=True)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Pass key via environment variable — keeps it out of process list (ps aux)
+    env = os.environ.copy()
+    env["ETH_PRIVATE_KEY"] = "0x" + PRIVATEKEY
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     if result.returncode != 0:
         print("cast stdout:", result.stdout, flush=True)
