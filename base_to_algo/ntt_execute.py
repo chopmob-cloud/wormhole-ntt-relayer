@@ -10,12 +10,26 @@ Usage:
 
 Reads config from ~/wormhole-relayer/.env
 """
-import os, sys, base64, argparse, requests
+import os, sys, base64, argparse, requests, hashlib, copy
 from pathlib import Path
 from algosdk.v2client import algod
 from algosdk import mnemonic as algo_mnemonic, account as algo_account, encoding
-from algosdk.transaction import BoxReference
-from algosdk.atomic_transaction_composer import AtomicTransactionComposer, AccountTransactionSigner
+from algosdk.atomic_transaction_composer import AtomicTransactionComposer, AccountTransactionSigner, TransactionWithSigner
+from algosdk.transaction import PaymentTxn, BoxReference, ApplicationCallTxn
+
+class _PaymentTxnWithBoxes(PaymentTxn):
+    """PaymentTxn subclass that adds apbx (box references) to the msgpack dict.
+    algosdk 2.11.1 PaymentTxn doesn't natively support boxes, so we add them here."""
+    def __init__(self, extra_boxes, **kwargs):
+        super().__init__(**kwargs)
+        self._extra_boxes = extra_boxes
+
+    def dictify(self):
+        d = dict(super().dictify())
+        if self._extra_boxes:
+            d["apbx"] = [BoxReference(app_id, name).dictify()
+                         for app_id, name in self._extra_boxes]
+        return OrderedDict(sorted(d.items()))
 from algosdk.abi import Method
 from Crypto.Hash import keccak as _keccak
 
@@ -37,10 +51,10 @@ def _int(k, d):    v = _cfg(k); return int(v) if v else d
 
 ALGOD_URL       = _cfg("ALGOD_URL",   "https://mainnet-api.4160.nodely.dev")
 ALGOD_TOKEN     = _cfg("ALGOD_TOKEN", "")
-WT_APP          = _int("WT_APP_ID",              0)
-NTT_MGR         = _int("NTT_MGR_APP_ID",         0)
-TRANSCEIVER_MGR = _int("TRANSCEIVER_MGR_APP_ID", 0)
-NTT_TOKEN_ASSET = _int("NTT_TOKEN_ASSET_ID",     0)
+WT_APP          = _int("WT_APP_ID",              3456573700)
+NTT_MGR         = _int("NTT_MGR_APP_ID",         3456573541)
+TRANSCEIVER_MGR = _int("TRANSCEIVER_MGR_APP_ID", 3298383942)
+NTT_TOKEN_ASSET = _int("NTT_TOKEN_ASSET_ID",     2699078351)
 SIG_LEN         = 66
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -125,8 +139,6 @@ def parse_ntt_fields(parsed):
 
     # Decode inner for recipient info
     inner_len  = int.from_bytes(mp[64:66], "big")
-    if 66 + inner_len > len(mp):
-        return None
     inner_body = mp[66:66+inner_len]
 
     from_amount     = int.from_bytes(inner_body[5:13],  "big") if len(inner_body) >= 13 else None
@@ -234,48 +246,100 @@ def preflight(parsed, fields, debug=False):
 
     return ok
 
-# ── Build ATC ─────────────────────────────────────────────────────────────────
+# ── Build ATC ─────────────────────────────────────────────────
 def build_execute_atc(client, sender_addr, sender_key, parsed, fields):
-    sp     = fresh_sp(client, fee=6000)
+    # 3-tx atomic group matching verified on-chain execute_message pattern:
+    #   Tx1: Payment -> NTT_MGR app addr  (funds messages_executed_ box MBR)
+    #   Tx2: TRANSCEIVER_MGR companion    (declares boxes pooled for Tx3 inner txns)
+    #   Tx3: NTT_MGR.execute_message      (only NTT_MGR's own boxes)
+    NTT_TOKEN_APP = 3456556688  # ntt_token from NTT_MGR global state
+
     signer = AccountTransactionSigner(sender_key)
     atc    = AtomicTransactionComposer()
 
-    # MessageReceived = (byte[32], byte[32], uint16, byte[32], byte[32], byte[])
+    # Fetch suggested params once; clone with different fee per tx
+    sp_base = client.suggested_params()
+    sp_base.flat_fee = True
+    cur = client.status()["last-round"]
+    sp_base.first = cur + 1
+    sp_base.last  = cur + 1000
+
+    def mk_sp(fee):
+        s = copy.copy(sp_base)
+        s.fee = fee
+        return s
+
+    # NTT_MGR application address (payment receiver for box MBR)
+    ntt_mgr_pub  = hashlib.new("sha512_256", b"appID" + NTT_MGR.to_bytes(8, "big")).digest()
+    ntt_mgr_addr = encoding.encode_address(ntt_mgr_pub)
+
+    # Rate-limit bucket keys
+    rate_limit_inbound  = keccak256(b"INBOUND_"  + parsed["emitter_chain"].to_bytes(2, "big"))
+    rate_limit_outbound = keccak256(b"OUTBOUND")
+
+    # address_roles_ key = 16-byte role prefix + NTT_MGR app pubkey (32b)
+    ROLE_PREFIX       = bytes.fromhex("f0887ba65ee2024ea881d91b74c2450e")
+    address_roles_key = ROLE_PREFIX + ntt_mgr_pub
+
+    # ── Tx 1: Payment for messages_executed_ box MBR ───────────────────────
+    atc.add_transaction(TransactionWithSigner(
+        PaymentTxn(
+            sender=sender_addr, sp=mk_sp(0),
+            receiver=ntt_mgr_addr, amt=25000,
+            note=os.urandom(8),
+        ),
+        signer,
+    ))
+
+    # ── Tx 2: TRANSCEIVER_MGR companion call ───────────────────────────
+    # sel=080daf6d, arg=ntt_digest. Declares boxes for Tx3 inner txns via group pooling:
+    #   app_index=0 => TRANSCEIVER_MGR's  num_attestations_
+    #   app_index=1 => NTT_MGR's          rate_limit_buckets_ (OUTBOUND)
+    #   app_index=2 => NTT_TOKEN_APP's    address_roles_
+    atc.add_transaction(TransactionWithSigner(
+        ApplicationCallTxn(
+            sender=sender_addr, sp=mk_sp(0),
+            index=TRANSCEIVER_MGR, on_complete=0,
+            app_args=[bytes.fromhex("080daf6d"), fields["ntt_digest"]],
+            foreign_apps=[NTT_MGR, NTT_TOKEN_APP],
+            boxes=[
+                BoxReference(app_index=0, name=b"num_attestations_"   + fields["ntt_digest"]),
+                BoxReference(app_index=1, name=b"rate_limit_buckets_" + rate_limit_outbound),
+                BoxReference(app_index=2, name=b"address_roles_"      + address_roles_key),
+            ],
+            note=os.urandom(8),
+        ),
+        signer,
+    ))
+
+    # ── Tx 3: execute_message ──────────────────────────────────────────
+    # Only NTT_MGR's own boxes needed; inner txns access theirs via group pooling
     method = Method.from_signature(
         "execute_message((byte[32],byte[32],uint16,byte[32],byte[32],byte[]))void"
     )
-
     message_received = [
-        fields["msg_id"],           # id
-        fields["user_univ"],        # user_address
-        parsed["emitter_chain"],    # source_chain_id
-        fields["src_ntt"],          # source_address (outer p[4:36])
-        fields["dst_ntt"],          # handler_address (outer p[36:68])
-        fields["inner"],            # payload (mp[64:] incl. length prefix)
+        fields["msg_id"],
+        fields["user_univ"],
+        parsed["emitter_chain"],
+        fields["src_ntt"],
+        fields["dst_ntt"],
+        fields["inner"][2:],
     ]
-
-    # app_index 0 = NTT_MGR, app_index 1 = TRANSCEIVER_MGR
-    boxes = [
-        BoxReference(app_index=0, name=b"messages_executed_"    + fields["msg_digest"]),
-        BoxReference(app_index=0, name=b"ntt_manager_peer_"     + parsed["emitter_chain"].to_bytes(2,"big")),
-        BoxReference(app_index=1, name=b"num_attestations_"     + fields["ntt_digest"]),
-        BoxReference(app_index=1, name=b"attestations_"         + fields["ntt_digest"] + WT_APP.to_bytes(8,"big")),
-        BoxReference(app_index=1, name=b"handler_transceivers_" + NTT_MGR.to_bytes(8,"big")),
-        BoxReference(app_index=1, name=b"handler_paused_" + NTT_MGR.to_bytes(8, "big")),
-    ]
-
-    accounts = [fields["recipient_addr"]] if fields["recipient_addr"] else []
-
+    recipient = fields["recipient_addr"]
+    accounts  = [recipient] if (recipient and recipient != sender_addr) else []
     atc.add_method_call(
         app_id=NTT_MGR,
         method=method,
-        sender=sender_addr,
-        sp=sp,
+        sender=sender_addr, sp=mk_sp(12000),
         signer=signer,
         method_args=[message_received],
-        foreign_apps=[TRANSCEIVER_MGR],
+        foreign_apps=[TRANSCEIVER_MGR, NTT_TOKEN_APP],
         foreign_assets=[NTT_TOKEN_ASSET],
-        boxes=boxes,
+        boxes=[
+            BoxReference(app_index=0, name=b"messages_executed_"   + fields["msg_digest"]),
+            BoxReference(app_index=0, name=b"ntt_manager_peer_"    + parsed["emitter_chain"].to_bytes(2, "big")),
+            BoxReference(app_index=0, name=b"rate_limit_buckets_"  + rate_limit_inbound),
+        ],
         accounts=accounts,
         note=os.urandom(8),
     )
@@ -318,12 +382,12 @@ def execute_ntt(vaa_b64, sender_mnemonic, dry_run=False, debug=False):
         print(f"\n  ✓ execute_message complete — tokens should now be minted!")
     except Exception as e:
         print(f"  Send failed: {e}")
+        raise
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("sequence", type=int)
-    parser.add_argument("--emitter", default=os.environ.get("BASE_EMITTER", ""),
-                        help="Source chain emitter (32-byte hex). Set BASE_EMITTER in .env")
+    parser.add_argument("--emitter", default="00000000000000000000000065a7d88b921e6e6c77e1dbd96eceab7506f629b2")
     parser.add_argument("--chain",   type=int, default=30)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--debug",   action="store_true")
