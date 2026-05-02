@@ -1,8 +1,10 @@
 # ntt-relayer
 
-A custom off-chain relayer for [Wormhole NTT (Native Token Transfer)](https://wormhole.com/docs/products/token-transfers/native-token-transfers/) bridging between **Algorand** and **Base**. Runs as two systemd services on a Linux server.
+A custom off-chain relayer for [Wormhole NTT (Native Token Transfer)](https://wormhole.com/docs/learn/messaging/native-token-transfers/overview/) bridging between **Algorand** and **Base**. Runs as two systemd services on a Linux server.
 
 The relayer watches WormholeScan for signed VAAs and submits them to the destination chain's NTT contracts. No funds are held by the relayer — it only pays gas on behalf of the bridge.
+
+The Algorand NTT contracts are implemented by [Folks Finance](https://folks.finance) in PuyaPy. The digest formula in `utils/ntt_digest.py` is derived from their on-chain `calculate_message_digest` implementation.
 
 ---
 
